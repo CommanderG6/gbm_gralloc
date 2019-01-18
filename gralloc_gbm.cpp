@@ -39,6 +39,7 @@
 #include <system/graphics.h>
 
 #include <gbm.h>
+#include <drm/drm_fourcc.h>
 
 #include "gralloc_gbm_priv.h"
 #include <android/gralloc_handle.h>
@@ -148,7 +149,7 @@ static unsigned int get_pipe_bind(int usage)
 	if (usage & GRALLOC_USAGE_HW_FB)
 		bind |= GBM_BO_USE_RENDERING;
 	if (usage & GRALLOC_USAGE_HW_COMPOSER)
-		bind |= GBM_BO_USE_RENDERING;
+		bind |= GBM_BO_USE_RENDERING | GBM_BO_USE_SCANOUT;
 
 	return bind;
 }
@@ -184,6 +185,7 @@ static struct gbm_bo *gbm_import(struct gbm_device *gbm,
 	data.strides[0] = handle->stride;
 	data.modifier = handle->modifier;
 	bo = gbm_bo_import(gbm, GBM_BO_IMPORT_FD_MODIFIER, &data, 0);
+   ALOGE("=========================== %s: modifier %llx", __func__, handle->modifier);
 	#else
 	data.fd = handle->prime_fd;
 	data.stride = handle->stride;
@@ -201,6 +203,7 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 	int format = get_gbm_format(handle->format);
 	int usage = get_pipe_bind(handle->usage);
 	int width, height;
+	long long unsigned modifiers[1];
 
 	width = handle->width;
 	height = handle->height;
@@ -220,12 +223,18 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 		height += handle->height / 2;
 	}
 
-	ALOGV("create BO, size=%dx%d, fmt=%d, usage=%x",
-	      handle->width, handle->height, handle->format, usage);
+	#ifdef GBM_BO_IMPORT_FD_MODIFIER
+	if (handle->usage & GRALLOC_USAGE_HW_COMPOSER)
+	   modifiers[0] = DRM_FORMAT_MOD_VIVANTE_SUPER_TILED;
+   else
+      modifiers[0] = DRM_FORMAT_MOD_LINEAR;
+   bo = gbm_bo_create_with_modifiers(gbm, width, height, format, modifiers, 1);
+   #else
 	bo = gbm_bo_create(gbm, width, height, format, usage);
+	#endif
 	if (!bo) {
-		ALOGE("failed to create BO, size=%dx%d, fmt=%d, usage=%x",
-		      handle->width, handle->height, handle->format, usage);
+		ALOGE("failed to create BO, size=%dx%d, fmt=%d, usage=%x %s",
+		      handle->width, handle->height, handle->format, usage, strerror(errno));
 		return NULL;
 	}
 
@@ -233,7 +242,11 @@ static struct gbm_bo *gbm_alloc(struct gbm_device *gbm,
 	handle->stride = gbm_bo_get_stride(bo);
 	#ifdef GBM_BO_IMPORT_FD_MODIFIER
 	handle->modifier = gbm_bo_get_modifier(bo);
+   ALOGE("=========================== %s: modifier %llx", __func__, handle->modifier);
 	#endif
+
+	ALOGE("create BO, size=%dx%d, fmt=%d, usage=%x, modifier=%llx",
+	      handle->width, handle->height, handle->format, usage, handle->modifier);
 
 	return bo;
 }
@@ -281,7 +294,7 @@ static int gbm_map(buffer_handle_t handle, int x, int y, int w, int h,
 		flags |= GBM_BO_TRANSFER_WRITE;
 
 	*addr = gbm_bo_map(bo, 0, 0, x + w, y + h, flags, &stride, &bo_data->map_data);
-	ALOGV("mapped bo %p (%d, %d)-(%d, %d) at %p", bo, x, y, w, h, *addr);
+	ALOGE("mapped bo %p (%d, %d)-(%d, %d) at %p", bo, x, y, w, h, *addr);
 	if (*addr == NULL)
 		return -ENOMEM;
 
